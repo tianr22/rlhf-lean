@@ -6,6 +6,7 @@ import torch
 from openrlhf.trainer.ppo_utils.experience_maker import Experience, SamplesGenerator
 
 
+        
 class SamplesGeneratorAsync(SamplesGenerator):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -16,57 +17,93 @@ class SamplesGeneratorAsync(SamplesGenerator):
         llms = self.vllm_engines
         args = self.strategy.args
 
-        sampling_params = SamplingParams(
-            temperature=kwargs.get("temperature", 1.0),
-            top_p=kwargs.get("top_p", 1.0),
-            top_k=kwargs.get("top_k", -1),
-            max_tokens=kwargs.get("max_new_tokens", 1024),
-            min_tokens=kwargs.get("min_new_tokens", 1),
-            skip_special_tokens=kwargs.get("skip_special_tokens", False),
-        )
         truncate_length = self.prompt_max_len + kwargs.get("max_new_tokens", 1024)
-
+        tokenizer = self.tokenizer
         # Expand prompt list based on the number of samples per prompt
         n_samples_per_prompt = kwargs.pop("n_samples_per_prompt", args.n_samples_per_prompt)
-        all_prompts = sum([[prompt] * n_samples_per_prompt for prompt in all_prompts], [])
-        all_labels = sum([[label] * n_samples_per_prompt for label in all_labels], [])
 
-        # Distribute requests to engines and collect responses to outputs
-        refs = []
-        batch_size = (len(all_prompts) + len(llms) - 1) // len(llms)
-        for i, llm in enumerate(llms):
-            prompts = all_prompts[i * batch_size : (i + 1) * batch_size]
-            labels = all_labels[i * batch_size : (i + 1) * batch_size]
-            refs.append(
-                llm.add_requests.remote(
-                    sampling_params=sampling_params,
-                    prompts=prompts,
-                    labels=labels,
-                    max_length=truncate_length,
-                    hf_tokenizer=self.tokenizer,
+        #######################
+        class SamplingTree:
+            def __init__(self):
+                self.prompt_to_responses = {}
+                self.max_rounds = args.max_rounds
+
+            def generate(
+                self,
+                prompt,
+                depth=0,
+            ):
+                if depth >= self.max_rounds:
+                    return 0
+                sampling_params = SamplingParams(
+                    temperature=kwargs.get("temperature", 1.0),
+                    top_p=kwargs.get("top_p", 1.0),
+                    top_k=kwargs.get("top_k", -1),
+                    max_tokens=kwargs.get("max_new_tokens", 1024),
+                    min_tokens=kwargs.get("min_new_tokens", 1),
+                    skip_special_tokens=kwargs.get("skip_special_tokens", False),
                 )
-            )
-        ray.get(refs)
+                refs = []
+                all_prompts = [prompt] * n_samples_per_prompt
+                all_labels = [None] * n_samples_per_prompt  # Labels are not used in this case
+                batch_size = (len(all_prompts) + len(llms) - 1) // len(llms)
+                for i, llm in enumerate(llms):
+                    prompts = all_prompts[i * batch_size : (i + 1) * batch_size]
+                    labels = all_labels[i * batch_size : (i + 1) * batch_size]
+                    refs.append(
+                        llm.add_requests.remote(
+                            sampling_params=sampling_params,
+                            prompts=prompts,
+                            labels=labels,
+                            max_length=truncate_length,
+                            hf_tokenizer=tokenizer,
+                        )
+                    )
+                ray.get(refs)
+                all_output_refs = []
+                for i, llm in enumerate(llms):
+                    all_output_refs.append(llm.get_responses.remote())
+                all_outputs = sum(ray.get(all_output_refs), [])
 
-        # Retrieve and combine results from all outputs
-        all_output_refs = []
-        for i, llm in enumerate(llms):
-            all_output_refs.append(llm.get_responses.remote())
-        all_outputs = sum(ray.get(all_output_refs), [])
+                # node logic
+                assert prompt not in self.prompt_to_responses, "Prompt already exists in the tree"
+                self.prompt_to_responses[prompt] = []
+                reward_sum = 0
+                for output in all_outputs:
+                    if output["pass"] == False:
+                        assert output["reward"] == 0, "Reward should be 0 for non-passing outputs"
+                        # expand the node
+                        revision_reward = self.generate(
+                            prompt=output["new_prompt"],
+                            depth=depth + 1,
+                        )
+                        output["reward"] = revision_reward
+                    self.prompt_to_responses[prompt].append(output)
+                    reward_sum += output["reward"]
 
-        # Group outputs by prompt
+                return reward_sum / len(all_outputs) 
+            
+            def get_prompt_to_responses(self):
+                return self.prompt_to_responses
+
         prompt_groups = {}
-        for output in all_outputs:
-            prompt = output["prompt"]
-            prompt_groups.setdefault(prompt, []).append(output)
-
+        for prompt in all_prompts:
+            # Create a sampling tree for each prompt
+            sampling_tree = SamplingTree()
+            sampling_tree.generate(prompt)
+            # Get the responses for the prompt
+            responses = sampling_tree.get_prompt_to_responses()
+            for p, outputs in responses.items():
+                assert p not in prompt_groups, f"Prompt {p} already exists in prompt_groups"
+                prompt_groups[p] = outputs
+        
         # Reorder outputs to keep same prompts together
         # This is very important for REINFORCE++-baseline/GRPO/RLOO
         all_outputs = []
         for prompt in prompt_groups.keys():
             all_outputs.extend(prompt_groups[prompt])
 
-        pad_token_id, eos_token_id = self.tokenizer.pad_token_id, self.tokenizer.eos_token_id
+        eos_token_id = self.tokenizer.eos_token_id
 
         # Process outputs one by one
         experiences_list = []
@@ -139,6 +176,7 @@ class SamplesGeneratorAsync(SamplesGenerator):
                 scores=torch.tensor([output["scores"]]),
                 info=info,
             )
+            # batch*n_samples_per_batch
             experiences_list.append(experience)
 
         return experiences_list

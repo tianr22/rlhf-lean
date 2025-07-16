@@ -145,6 +145,7 @@ class ActorPPOTrainer(ABC):
 
     def ppo_train(self, kl_ctl: float):
         # replay buffer may be empty at first, we should rebuild at each training
+        # FIXME maybe it should always be false for grpo training
         not_shuffle = self.strategy.ring_attn_group is not None or self.args.ds_tensor_parallel_size > 1
         dataloader = DataLoader(
             self.replay_buffer,

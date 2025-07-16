@@ -45,3 +45,5 @@ python3 -m openrlhf.cli.train_ppo_ray \
 
 # You could also try
 #   --kl_estimator k2 \
+
+# n_samples_per_prompt means the number of samples generated for each prompt.

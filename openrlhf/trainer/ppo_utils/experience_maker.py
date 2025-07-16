@@ -444,6 +444,7 @@ class RemoteExperienceMaker(ABC):
         # Concat the samples into micro_rollout_batch_size
         # Each batch of samples will be scheduled to a effective Ray Actor (i.e, a DP rank)
         # TODO: balance the number of tokens of each batch for better performance
+        # TODO 确认单列为一个prompt
         samples_list = []
         batch_size = self.args.micro_rollout_batch_size
         for i in range(0, len(rollout_samples), batch_size):
