@@ -14,6 +14,7 @@ from openrlhf.trainer.ray.ppo_actor import PolicyModelActor
 from openrlhf.trainer.ray.ppo_critic import CriticModelActor
 from openrlhf.utils import get_strategy
 
+DEBUG = True
 
 def train(args):
     # initialize ray if not initialized
@@ -26,6 +27,8 @@ def train(args):
 
     # init vllm / actor /critic /ref /reward model
     # if colocated, create placement group for actor and ref model explicitly.
+    if DEBUG:
+        print("start init vllm / actor /critic /ref /reward model")
     pg = None
     if args.colocate_actor_ref or args.colocate_all_models:
         if args.init_kl_coef > 0:
@@ -37,6 +40,8 @@ def train(args):
         bundles = [{"GPU": 1, "CPU": 1} for _ in range(args.actor_num_nodes * args.actor_num_gpus_per_node)]
         pg = placement_group(bundles, strategy="PACK")
         ray.get(pg.ready())
+    if DEBUG:
+        print("end init vllm / actor /critic /ref /reward model")
 
     # init vLLM engine for text generation
     vllm_engines = None
@@ -140,6 +145,8 @@ def train(args):
         from openrlhf.trainer.ppo_trainer import PPOTrainer
 
     # init PPO trainer (Single controller)
+    if DEBUG:
+        print("start init PPO trainer")
     ppo_trainer = PPOTrainer.remote(
         args.pretrain,
         strategy,
