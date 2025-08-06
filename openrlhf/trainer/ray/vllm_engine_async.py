@@ -15,6 +15,10 @@ from dataclasses import dataclass, field
 from .vllm_engine import BaseLLMRayActor
 from urllib.parse import urljoin, urlparse, urlunparse
 
+from colorama import Fore
+
+DEBUG = True
+
 
 @ray.remote
 class AgentInstance:
@@ -58,6 +62,8 @@ class LLMRayActorAsync(BaseLLMRayActor):
         self.llm = vllm.AsyncLLMEngine.from_engine_args(engine_args)
         await self.llm.is_sleeping()
 
+        self.lean_client = await Lean4Client.create(base_url="http://localhost:12332")
+
     async def init_process_group(
         self, master_address, master_port, rank_offset, world_size, group_name, backend, use_ray
     ):
@@ -83,100 +89,101 @@ class LLMRayActorAsync(BaseLLMRayActor):
     async def wake_up(self):
         await self.llm.wake_up()
 
-    async def add_requests(self, sampling_params, prompts, labels, max_length, hf_tokenizer=None, max_steps=10000):
+    async def compile_lean(self, lean_code, allow_sorry=False):
         """
-        Process requests from rank0 and generate responses with multiple agent interactions.
-        Each prompt will go through multiple steps of interaction using the step function.
-        Results are streamed back as each agent completes its execution.
-
-        Args:
-            sampling_params: Parameters for sampling
-            prompts: List of prompts to process
-            labels: List of labels corresponding to prompts
-            max_steps: Maximum number of interaction steps
+        Returns (error, passed, messages)
         """
-
-        # Create semaphore to control concurrent task execution
-        NUM_TASKS = os.environ.get("OPENRLHF_ASYNC_NUM_TASKS", 128)
-        semaphore = asyncio.Semaphore(NUM_TASKS)
-
-        # TODO: lean agent
-        async def execute_agent(prompt, label, sampling_params):
-            async with semaphore:
-                # Create a unique agent instance for this prompt
-                agent_instance = AgentInstance.remote(self.agent_func_path)
-
-                # Initialize observations and actions for the current prompt
-                observation = prompt
-                reward = 0
-                score = 0
-                action_ranges = []
+        # analyze compiler output
+        lean_results = await self.lean_client.async_verify(
+            [{"code": lean_code, "custom_id": f"{id(lean_code)}"}],
+            30,
+        )
+        lean_result = lean_results["results"][0]
+        if not lean_result["error"] is None:
+            if DEBUG:
+                print(Fore.RED + f"compiler error {lean_result["error"]}")
+            return True, False, None
+        passed = True
+        if not allow_sorry and "sorry" in lean_code:
+            passed = False
+        messages = lean_result["response"].get("messages", [])
+        for message in messages:
+            if message.get("severity") == "error":
                 passed = False
-                next_prompt = ""
+        return False, passed, messages
 
-                # Next sampling budget
-                observation_tokens_len = len(
-                    hf_tokenizer(observation, add_special_tokens=False, return_tensors="pt")["input_ids"][0]
-                )
-                sampling_params.max_tokens = max_length - observation_tokens_len
-                # No budget to generate, stop
-                if sampling_params.max_tokens <= 0:
-                    reward = 0
-                    score = 0
-                    action_ranges.append((len(observation), len(observation)))
+    async def add_request(self, sampling_params, prompts, labels, max_length, hf_tokenizer=None, max_steps=10000):
+        # Initialize observations and actions for the current prompt
+        observation = prompts[0]
+        reward = 0
+        score = 0
+        action_ranges = []
+        passed = False
+        next_prompt = ""
+
+        # Next sampling budget
+        observation_tokens_len = len(
+            hf_tokenizer(observation, add_special_tokens=False, return_tensors="pt")["input_ids"][0]
+        )
+        sampling_params.max_tokens = max_length - observation_tokens_len
+        if sampling_params.max_tokens <= 0:
+            # No budget to generate, stop
+            reward = 0
+            score = 0
+            action_ranges.append((len(observation), len(observation)))
+            passed = False
+            next_prompt = prompts[0]
+        else:
+            # rollout llm
+            request_output = await self.generate_async(observation, sampling_params)
+            action = request_output.outputs[0].text
+            observation += action
+            action_ranges.append((len(observation), len(observation) + len(action)))
+            # analyze generated lean code
+            _thought, lean_code = parse_response(action)
+            if lean_code is None:
+                if DEBUG:
+                    print(Fore.RED + "lean code is none")
+                reward = 0.0
+                score = 0.0
+                passed = False
+                next_prompt = prompts[0]
+            else:
+                # compile the code and get the reward
+                error, passed, messages = await self.compile_lean(lean_code, allow_sorry=False)
+                if error:
+                    if DEBUG:
+                        print(Fore.RED + "error, reward = 0")
+                    reward = 0.0
+                    score = 0.0
                     passed = False
-                    next_prompt = prompt
+                    next_prompt = prompts[0]
+                elif passed:
+                    if DEBUG:
+                        print(Fore.RED + "passed, reward = 1")
+                    reward = 1.0
+                    score = 1.0
+                    next_prompt = ""
                 else:
-                    request_output = await self.generate_async(observation, sampling_params)
-                    action = request_output.outputs[0].text
-                    observation += action
+                    if DEBUG:
+                        print(Fore.RED + "failed, reward = 0")
+                    reward = 0.0
+                    score = 0.0
+                    code_with_feedback = Trial(lean_code, messages).__str__()
+                    next_prompt = replace_first_lean4_code(prompts[0], code_with_feedback)
 
-                    action_ranges.append((len(observation), len(observation) + len(action)))
-                    # analyze generated lean code
-                    _, lean_code = parse_response(action)
-                    if lean_code is None:
-                        reward = 0
-                        score = 0
-                        passed = False
-                        next_prompt = prompt
-                    else:
-                        # compile the code and get the reward
-                        _, passed, messages = compile_lean(lean_code, allow_sorry=False)
-                        if passed:
-                            reward = 1.0
-                            score = 1.0
-                            next_prompt = ""
-                        else:
-                            reward = 0.0
-                            score = 0.0
-                            code_with_feedback = Trial(lean_code, messages).__str__()
-                            next_prompt = replace_first_lean4_code(prompt, code_with_feedback)
-
-                ray.kill(agent_instance)
-
-                # Store the final response when agent execution is complete
-                final_response = {
-                    "prompt": prompt,
-                    "label": label,
-                    "observation": observation,  # observation = (prompt + action)
-                    "reward": reward,
-                    "scores": score,
-                    "extra_logs": {},
-                    "action_ranges": action_ranges,
-                    "pass": passed,
-                    "next_prompt": next_prompt,
-                }
-                await self.result_queue.put(final_response)
-
-        # Create and start tasks for all agent executions with controlled concurrency
-        import copy
-
-        tasks = []
-        for prompt, label in zip(prompts, labels):
-            tasks.append(execute_agent(prompt, label, copy.deepcopy(sampling_params)))
-
-        # Run the async code using the class's event loop
-        await asyncio.gather(*tasks)
+        final_response = {
+            "prompt": prompts[0],
+            "label": labels[0],
+            "observation": observation,  # observation = (prompt + action)
+            "reward": reward,
+            "scores": score,
+            "extra_logs": {},
+            "action_ranges": action_ranges,
+            "pass": passed,
+            "next_prompt": next_prompt,
+        }
+        return final_response
 
     async def generate_async(self, prompts, sampling_params):
         from vllm.utils import random_uuid
@@ -205,7 +212,25 @@ class LLMRayActorAsync(BaseLLMRayActor):
 
 
 class Lean4Client(object):
+    """Client for interacting with the Lean 4 verification server.
+
+    This client handles communication with a Lean 4 server for verifying proofs
+    and retrieving results. It handles authentication, connection testing,
+    and provides methods for synchronous and asynchronous verification.
+    """
+
     def __init__(self, base_url, api_key=None, disable_cache=False) -> None:
+        """Initialize the Lean4Client.
+
+        Args:
+            base_url (str): Base URL of the Lean 4 server.
+            api_key (str, optional): API key for authentication. If None, will try
+                to load from LEANSERVER_API_KEY environment variable. Defaults to None.
+            disable_cache (bool, optional): Whether to disable result and header caching. Defaults to False.
+
+        Raises:
+            Exception: If the Lean server cannot be connected to or is unavailable.
+        """
         self.url = base_url
         if api_key is None:
             api_key = os.getenv("LEANSERVER_API_KEY")
@@ -213,12 +238,35 @@ class Lean4Client(object):
         self.api_key = api_key
         self.disable_cache = disable_cache
 
-        self._test_connection()
-
-    def verify(self, codes, timeout, infotree_type=None):
-        return asyncio.run(self.async_verify(codes, timeout, infotree_type))
+    @classmethod
+    async def create(cls, base_url, api_key=None, disable_cache=False):
+        """异步工厂方法创建 Lean4Client 实例"""
+        client = cls(base_url, api_key, disable_cache)
+        await client._test_connection()
+        return client
 
     async def async_verify(self, codes, timeout, infotree_type=None):
+        """verify the proof code and get result
+
+        Args:
+            codes (list): The list of lena 4 code to verify.
+                Each code is a dict of:
+                    - code: The lena 4 code to verify.
+                    - custom_id: The custom id of the proof.
+            timeout (int): The timeout in seconds.
+
+        Returns:
+            response (dict): The response from the server.
+                It contains a  key results, which is a list of dictionaries.
+                Each dictionary contains the following keys:
+                    - code: The custom id of the proof.
+                    - error: A string with the error message from the lean server.
+                    - response: A dictionary with the response from the LEAN REPL.
+
+        Example:
+            >>> client.one_pass_verify("import Mathlib\n\nexample : 2 = 2 := rfl", timeout=60)
+            {'results': [{'code': 'test_connection', 'error': None, 'response': {'env': 0}}]}
+        """
         json_data = {
             "codes": codes,
             "timeout": timeout,
@@ -235,6 +283,19 @@ class Lean4Client(object):
         json_data: dict | None = None,
         n_retries: int = 3,
     ) -> dict:
+        """
+        One single method for sending all requests, with retry behavior controlled by the caller.
+
+        Args:
+            method: The HTTP method to use (e.g., "get", "post").
+            endpoint: The endpoint to call.
+            json_data: The data to send in the request.
+            n_retries: Number of retry attempts.
+
+        Returns:
+            response: The response from the server.
+        """
+
         # Create retry decorator with dynamic n_retries
         @retry(
             stop=stop_after_attempt(n_retries),  # Dynamic retries based on the caller's argument
@@ -249,6 +310,8 @@ class Lean4Client(object):
             }
 
             # Create a session with trust_env set to True
+            if DEBUG:
+                print(Fore.RED + "lean client create session")
             async with aiohttp.ClientSession(trust_env=True, timeout=aiohttp.ClientTimeout(total=3600)) as session:
                 async with session.request(
                     method,
@@ -265,14 +328,36 @@ class Lean4Client(object):
         return await query_with_retries(self.url)
 
     def _ensure_url_has_scheme(self, url, default_scheme="http"):
+        """Ensure URL has a scheme (http/https) prefix.
+
+        Args:
+            url (str): The URL to check and potentially modify.
+            default_scheme (str, optional): The scheme to add if none exists. Defaults to "http".
+
+        Returns:
+            str: URL with a scheme.
+        """
         parsed = urlparse(url)
         if not parsed.scheme:
             parsed = urlparse(f"{default_scheme}://{url}")
         return urlunparse(parsed)
 
-    def _test_connection(self):
+    async def _test_connection(self):
+        """Test the connection to the Lean server.
+
+        Sends a simple GET request to the root endpoint to verify
+        that the server is available and responsive.
+
+        Raises:
+            Exception: If the server cannot be connected to or returns a non-ok status.
+
+        Returns:
+            bool: True if connection test passed.
+        """
         try:
-            response = asyncio.run(self._query("get", "/"))
+            if DEBUG:
+                print(Fore.RED + "lean client test connection")
+            response = await self._query("get", "/")
         except RetryError:
             raise Exception(f"The lean server {self.url} cannot be connected.")
 
@@ -442,29 +527,6 @@ def parse_response(response: str) -> tuple[str, str]:
         return None, None
 
 
-def compile_lean(lean_code, allow_sorry=False):
-    """
-    Returns (error, passed, messages)
-    """
-    lean_client = Lean4Client(base_url="115.182.62.193:12332")
-    lean_results = lean_client.verify(
-        [{"proof": lean_code, "custom_id": f"{id(lean_code)}"}],
-        30,
-    )
-    # analyze compiler output
-    lean_result = lean_results["results"][0]
-    if not lean_result["error"] is None:
-        return True, False, None
-    passed = True
-    if not allow_sorry and "sorry" in lean_code:
-        passed = False
-    messages = lean_result["response"].get("messages", [])
-    for message in messages:
-        if message.get("severity") == "error":
-            passed = False
-    return False, passed, messages
-
-
 def replace_first_lean4_code(original: str, new_code: str) -> str:
     """
     替换字符串中第一个 Lean4 代码块的内容
@@ -476,6 +538,8 @@ def replace_first_lean4_code(original: str, new_code: str) -> str:
     match = re.search(pattern, original, re.DOTALL)
 
     if not match:
+        if DEBUG:
+            print(Fore.RED + f"error forming next prompt {original}")
         return original  # 未找到代码块时返回原字符串
 
     # 计算代码块的起止位置
@@ -489,7 +553,7 @@ def replace_first_lean4_code(original: str, new_code: str) -> str:
     suffix = original[end_pos:]
 
     # 构建新代码块（保留原语言标识）
-    new_block = f"```lean4\n{new_code.strip()}\n```"
+    new_block = f"\n{new_code.strip()}\n"
 
     # 组合新字符串
     return prefix + new_block + suffix

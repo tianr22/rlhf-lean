@@ -2,16 +2,19 @@ from typing import List
 
 import ray
 import torch
-
+import asyncio
 from openrlhf.trainer.ppo_utils.experience_maker import Experience, SamplesGenerator
 
 
-        
 class SamplesGeneratorAsync(SamplesGenerator):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
     def _generate_vllm(self, all_prompts: List[str], all_labels, **kwargs) -> List[Experience]:
+        # 使用 asyncio.run 来运行异步版本
+        return asyncio.run(self._generate_vllm_async(all_prompts, all_labels, **kwargs))
+
+    async def _generate_vllm_async(self, all_prompts: List[str], all_labels, **kwargs) -> List[Experience]:
         from vllm import SamplingParams
 
         llms = self.vllm_engines
@@ -27,15 +30,7 @@ class SamplesGeneratorAsync(SamplesGenerator):
             def __init__(self):
                 self.prompt_to_responses = {}
                 self.max_rounds = args.max_rounds
-
-            def generate(
-                self,
-                prompt,
-                depth=0,
-            ):
-                if depth >= self.max_rounds:
-                    return 0
-                sampling_params = SamplingParams(
+                self.sampling_params = SamplingParams(
                     temperature=kwargs.get("temperature", 1.0),
                     top_p=kwargs.get("top_p", 1.0),
                     top_k=kwargs.get("top_k", -1),
@@ -43,60 +38,56 @@ class SamplesGeneratorAsync(SamplesGenerator):
                     min_tokens=kwargs.get("min_new_tokens", 1),
                     skip_special_tokens=kwargs.get("skip_special_tokens", False),
                 )
-                refs = []
-                all_prompts = [prompt] * n_samples_per_prompt
-                all_labels = [None] * n_samples_per_prompt  # Labels are not used in this case
-                batch_size = (len(all_prompts) + len(llms) - 1) // len(llms)
-                for i, llm in enumerate(llms):
-                    prompts = all_prompts[i * batch_size : (i + 1) * batch_size]
-                    labels = all_labels[i * batch_size : (i + 1) * batch_size]
-                    refs.append(
-                        llm.add_requests.remote(
-                            sampling_params=sampling_params,
-                            prompts=prompts,
-                            labels=labels,
-                            max_length=truncate_length,
-                            hf_tokenizer=tokenizer,
-                        )
-                    )
-                ray.get(refs)
-                all_output_refs = []
-                for i, llm in enumerate(llms):
-                    all_output_refs.append(llm.get_responses.remote())
-                all_outputs = sum(ray.get(all_output_refs), [])
 
-                # node logic
-                assert prompt not in self.prompt_to_responses, "Prompt already exists in the tree"
-                self.prompt_to_responses[prompt] = []
-                reward_sum = 0
-                for output in all_outputs:
+            async def generate_async(
+                self,
+                prompt,
+                depth=0,
+            ):
+                assert len(llms) == 1, "Async generation is only supported for a single LLM"
+                if depth >= self.max_rounds:
+                    return 0
+
+                async def process_single_sample():
+                    # Generate responses for the prompt
+                    ref = llms[0].add_request.remote(
+                        sampling_params=self.sampling_params,
+                        prompts=[prompt],
+                        labels=[None],  # Labels are not used in this case
+                        max_length=truncate_length,
+                        hf_tokenizer=tokenizer,
+                    )
+                    output = await asyncio.to_thread(ray.get, ref)
                     if output["pass"] == False:
                         assert output["reward"] == 0, "Reward should be 0 for non-passing outputs"
                         # expand the node
-                        revision_reward = self.generate(
-                            prompt=output["new_prompt"],
+                        revision_reward = await self.generate_async(
+                            prompt=output["next_prompt"],
                             depth=depth + 1,
                         )
                         output["reward"] = revision_reward
-                    self.prompt_to_responses[prompt].append(output)
+                    return output
+
+                # Create concurrent tasks for all samples
+                tasks = [process_single_sample() for _ in range(n_samples_per_prompt)]
+                outputs = await asyncio.gather(*tasks)
+
+                # Store all outputs and calculate reward sum
+                reward_sum = 0
+                for output in outputs:
+                    self.prompt_to_responses.setdefault(prompt, []).append(output)
                     reward_sum += output["reward"]
 
-                return reward_sum / len(all_outputs) 
-            
+                return reward_sum / n_samples_per_prompt
+
             def get_prompt_to_responses(self):
                 return self.prompt_to_responses
 
-        prompt_groups = {}
-        for prompt in all_prompts:
-            # Create a sampling tree for each prompt
-            sampling_tree = SamplingTree()
-            sampling_tree.generate(prompt)
-            # Get the responses for the prompt
-            responses = sampling_tree.get_prompt_to_responses()
-            for p, outputs in responses.items():
-                assert p not in prompt_groups, f"Prompt {p} already exists in prompt_groups"
-                prompt_groups[p] = outputs
-        
+        sampling_tree = SamplingTree()
+        tasks = [sampling_tree.generate_async(prompt) for prompt in all_prompts]
+        await asyncio.gather(*tasks)
+        prompt_groups = sampling_tree.get_prompt_to_responses()
+
         # Reorder outputs to keep same prompts together
         # This is very important for REINFORCE++-baseline/GRPO/RLOO
         all_outputs = []

@@ -1,46 +1,21 @@
-import re
-
-
-def replace_first_lean4_code(original: str, new_code: str) -> str:
-    """
-    替换字符串中第一个 Lean4 代码块的内容
-    """
-    # 匹配第一个 Lean4 代码块的正则表达式
-    pattern = r"```(?:lean4|language-lean4)(.*?```)"
-
-    # 使用非贪婪匹配，确保匹配第一个代码块
-    match = re.search(pattern, original, re.DOTALL)
-
-    if not match:
-        return original  # 未找到代码块时返回原字符串
-
-    # 计算代码块的起止位置
-    start_pos = match.start()
-    end_pos = match.end()
-
-    # 提取代码块前的文本
-    prefix = original[:start_pos]
-
-    # 提取代码块后的文本
-    suffix = original[end_pos:]
-
-    # 构建新代码块（保留原语言标识）
-    new_block = f"```lean4\n{new_code.strip()}\n```"
-
-    # 组合新字符串
-    return prefix + new_block + suffix
-
-
-original_str = """
-思考过程：
-<think>
-我们需要证明这个定理...
-</think>
-
-首先尝试以下代码：
-```lean4
-theorem test : True := by trivial
-```
+"""
+curl -X POST http://localhost:12332/verify -H "Content-Type: application/json" -d "{\"codes\": [{\"custom_id\": \"1234\",\"proof\": \"#check Nat\"}], \"infotree_type\": \"original\"}" -v
 """
 
-print(replace_first_lean4_code(original_str, "theorem test : True := by sorry"))
+import asyncio
+
+from openrlhf.trainer.ray.vllm_engine_async import Lean4Client
+
+code_str = "import Mathlib\nimport Aesop\n\nset_option maxHeartbeats 0\n\nopen BigOperators Real Nat Topology Rat\n\nexample : \u2200 n : \u2115, 6 \u2223 n * (n + 1) * (2 * n + 1) := by\n  intro n\n  induction n with\n  | zero => simp\n  | succ n ih =>\n    -- Show that the difference is divisible by 6\n    have h : (n + 1) * (n + 2) * (2 * (n + 1) + 1) - n * (n + 1) * (2 * n + 1) = 6 * (n + 1) ^ 2 := by ring\n    rw [\u2190 h]\n    exact dvd_add (dvd_mul_of_dvd_left ih _) (dvd_mul_right _ _)\n"
+
+
+async def test():
+    print("asyncio run test")
+    lean_client = await Lean4Client.create(base_url="http://localhost:12332")
+    print("finish create")
+    results = await lean_client.async_verify([{"code": code_str, "unique_id": 0}], timeout=30)
+    print(results)
+
+
+if __name__ == "__main__":
+    asyncio.run(test())

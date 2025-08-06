@@ -13,6 +13,8 @@ from openrlhf.models import Actor, get_llm_for_sequence_regression
 from openrlhf.trainer.ray.utils import ray_noset_visible_devices
 from openrlhf.utils.deepspeed import DeepspeedStrategy
 
+from colorama import Fore 
+DEBUG = True
 
 class BaseDistributedActor:
     def __init__(self, world_size, rank, master_addr, master_port):
@@ -104,6 +106,8 @@ class BaseModelActor(BaseDistributedActor):
 @ray.remote(num_gpus=1)
 class ReferenceModelActor(BaseModelActor):
     def init_model_from_pretrained(self, strategy: DeepspeedStrategy, pretrain):
+        if DEBUG:
+            print(Fore.RED+"start init reference model")
         self._setup_distributed(strategy)
         model = Actor(
             pretrain,
@@ -122,6 +126,8 @@ class ReferenceModelActor(BaseModelActor):
 
         self.model = self.strategy.prepare(model, is_rlhf=True)
         self.model.eval()
+        if DEBUG:
+            print(Fore.RED+"end init reference model")
 
     def forward(
         self,

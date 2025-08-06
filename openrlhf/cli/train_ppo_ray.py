@@ -14,7 +14,10 @@ from openrlhf.trainer.ray.ppo_actor import PolicyModelActor
 from openrlhf.trainer.ray.ppo_critic import CriticModelActor
 from openrlhf.utils import get_strategy
 
+from colorama import Fore
+
 DEBUG = True
+
 
 def train(args):
     # initialize ray if not initialized
@@ -27,8 +30,6 @@ def train(args):
 
     # init vllm / actor /critic /ref /reward model
     # if colocated, create placement group for actor and ref model explicitly.
-    if DEBUG:
-        print("start init vllm / actor /critic /ref /reward model")
     pg = None
     if args.colocate_actor_ref or args.colocate_all_models:
         if args.init_kl_coef > 0:
@@ -40,10 +41,10 @@ def train(args):
         bundles = [{"GPU": 1, "CPU": 1} for _ in range(args.actor_num_nodes * args.actor_num_gpus_per_node)]
         pg = placement_group(bundles, strategy="PACK")
         ray.get(pg.ready())
-    if DEBUG:
-        print("end init vllm / actor /critic /ref /reward model")
 
     # init vLLM engine for text generation
+    if DEBUG:
+        print(Fore.RED + "start init vllm engine")
     vllm_engines = None
     if args.vllm_num_engines is not None and args.vllm_num_engines > 0:
         max_len = args.max_len if args.max_len else args.prompt_max_len + args.generate_max_len
@@ -77,7 +78,11 @@ def train(args):
             LLMRayActor,
             args.agent_func_path,
         )
+    if DEBUG:
+        print(Fore.RED + "end init vllm engine")
 
+    if DEBUG:
+        print(Fore.RED + "start init actor model")
     actor_model = RayActorGroup(
         args.actor_num_nodes,
         args.actor_num_gpus_per_node,
@@ -146,7 +151,7 @@ def train(args):
 
     # init PPO trainer (Single controller)
     if DEBUG:
-        print("start init PPO trainer")
+        print(Fore.RED + "start init PPO trainer")
     ppo_trainer = PPOTrainer.remote(
         args.pretrain,
         strategy,
@@ -165,17 +170,32 @@ def train(args):
         temperature=args.temperature,
         top_p=args.top_p,
     )
+    if DEBUG:
+        print(Fore.RED + "end init PPO trainer")
     # training update steps
     max_steps = ray.get(ppo_trainer.get_max_steps.remote())
 
     # init reference/reward/actor model
+    if DEBUG:
+        print(Fore.RED + "start init reference/reward/actor trainer")
     refs = []
     if ref_model is not None:
         refs.extend(ref_model.async_init_model_from_pretrained(strategy, args.pretrain))
+    if DEBUG:
+        print(Fore.RED + "end init ref model")
     refs.extend(actor_model.async_init_model_from_pretrained(strategy, args.pretrain, max_steps, vllm_engines))
+    if DEBUG:
+        print(Fore.RED + "end init actor model")
     if not args.remote_rm_url:
+        print(Fore.RED + "this should not be triggered")
         refs.extend(reward_model.async_init_model_from_pretrained(strategy, reward_pretrain))
+    if DEBUG:
+        print(Fore.RED + "end init reward model")
+    if DEBUG:
+        print(Fore.RED + f"total {len(refs)} refs")
     ray.get(refs)
+    if DEBUG:
+        print(Fore.RED + "end init reference/reward/actor trainer")
 
     if args.critic_pretrain:
         # critic scheduler initialization depends on max_step, so we have to init critic after actor
@@ -195,6 +215,8 @@ def train(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    # lean
+    parser.add_argument("--max_rounds", type=int, default=1, help="max training rounds for tree sampling")
     # Ray and vLLM
     parser.add_argument("--ref_num_nodes", type=int, default=1, help="number of nodes for reference")
     parser.add_argument("--ref_num_gpus_per_node", type=int, default=8, help="number of gpus per node for reference")

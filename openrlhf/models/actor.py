@@ -157,6 +157,8 @@ class Actor(nn.Module):
             position_ids.masked_fill_(attention_mask == 0, 1)
 
         output = self.model(sequences, attention_mask=foward_attention_mask, position_ids=position_ids)
+        # print logits shape
+        print("logits shape", output["logits"].shape)
         # https://github.com/OpenRLHF/OpenRLHF/pull/634
         output["logits"] = output["logits"].to(torch.float32)
 
