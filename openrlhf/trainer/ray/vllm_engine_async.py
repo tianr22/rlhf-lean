@@ -1,6 +1,7 @@
 import re
 import os
 import ray
+import math
 import mistune
 import logging
 import asyncio
@@ -148,29 +149,36 @@ class LLMRayActorAsync(BaseLLMRayActor):
                 score = 0.0
                 passed = False
                 next_prompt = prompts[0]
+                heuristic = -math.inf
             else:
                 # compile the code and get the reward
                 error, passed, messages = await self.compile_lean(lean_code, allow_sorry=False)
                 if error:
+                    # compiler error triggered
                     if DEBUG:
                         print(Fore.RED + "error, reward = 0")
                     reward = 0.0
                     score = 0.0
                     passed = False
                     next_prompt = prompts[0]
+                    heuristic = -math.inf
                 elif passed:
+                    # code is good
                     if DEBUG:
                         print(Fore.RED + "passed, reward = 1")
                     reward = 1.0
                     score = 1.0
                     next_prompt = ""
+                    heuristic = 0
                 else:
+                    # code is bad
                     if DEBUG:
                         print(Fore.RED + "failed, reward = 0")
                     reward = 0.0
                     score = 0.0
                     code_with_feedback = Trial(lean_code, messages).__str__()
                     next_prompt = replace_first_lean4_code(prompts[0], code_with_feedback)
+                    heuristic = -len(messages)
 
         final_response = {
             "prompt": prompts[0],
@@ -182,6 +190,7 @@ class LLMRayActorAsync(BaseLLMRayActor):
             "action_ranges": action_ranges,
             "pass": passed,
             "next_prompt": next_prompt,
+            "heuristic": heuristic,
         }
         return final_response
 
