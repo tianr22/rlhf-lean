@@ -126,7 +126,7 @@ class SamplesGeneratorAsync(SamplesGenerator):
                 for output in outputs:
                     if output["pass"] == False:
                         # store the output for future revision
-                        self.failure_queue.append((output["scores"], output))
+                        self.failure_queue.append((output["heuristic"], output))
 
                 if len(self.failure_queue) > 0:
                     # get the best output
