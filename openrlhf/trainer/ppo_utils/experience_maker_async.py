@@ -1,5 +1,5 @@
 from typing import List
-
+from abc import ABC,abstractmethod
 import ray
 import torch
 import asyncio
@@ -26,7 +26,7 @@ class SamplesGeneratorAsync(SamplesGenerator):
         n_samples_per_prompt = kwargs.pop("n_samples_per_prompt", args.n_samples_per_prompt)
 
         #######################
-        class SamplingTree:
+        class SamplingTree(ABC):
             def __init__(self):
                 self.prompt_to_responses = {}
                 self.max_rounds = args.max_rounds
@@ -39,10 +39,19 @@ class SamplesGeneratorAsync(SamplesGenerator):
                     skip_special_tokens=kwargs.get("skip_special_tokens", False),
                 )
 
+            @abstractmethod
+            async def generate_async(self, prompt, **kwargs):
+                pass
+
+            def get_prompt_to_responses(self):
+                return self.prompt_to_responses
+            
+        class SamplingTreeV1(SamplingTree):
             async def generate_async(
                 self,
                 prompt,
                 depth=0,
+                **kwargs,
             ):
                 assert len(llms) == 1, "Async generation is only supported for a single LLM"
                 if depth >= self.max_rounds:
@@ -80,21 +89,80 @@ class SamplesGeneratorAsync(SamplesGenerator):
 
                 return reward_sum / n_samples_per_prompt
 
-            def get_prompt_to_responses(self):
-                return self.prompt_to_responses
+        class SamplingTreeV2(SamplingTree):
+            def __init__(self):
+                super.__init__()
+                self.failure_queue = []
 
-        sampling_tree = SamplingTree()
+            async def generate_async(
+                self,
+                prompt,
+                round=0,
+                **kwargs,
+            ):
+                """
+                    For this version, 
+                        prompt_to_responses: store all the passing outputs and the failing outputs that have been expanded
+                        failure_queue: store the failing outputs that have not been expanded yet
+                """
+                if round >= self.max_rounds:
+                    return 0
+                # TODO(tr) maybe moving the llm parallel to different original prompts is better 
+                refs = []
+                batch_size = (n_samples_per_prompt + len(llms) - 1) // len(llms)
+                for i, llm in enumerate(llms):
+                    for _ in range(i * batch_size, min((i + 1) * batch_size, n_samples_per_prompt)):
+                        refs.append(
+                            llm.add_request.remote(
+                                sampling_params=self.sampling_params,
+                                prompts=[prompt],
+                                labels=[None],
+                                max_length=truncate_length,
+                                hf_tokenizer=tokenizer,
+                            )
+                        )
+                outputs = await asyncio.to_thread(ray.get, refs)
+
+                for output in outputs:
+                    if output["pass"] == False:
+                        # store the output for future revision
+                        self.failure_queue.append((output["scores"], output))
+
+                if len(self.failure_queue) > 0:
+                    # get the best output
+                    self.failure_queue.sort(key=lambda x: x[0], reverse=True)
+                    best_potential = self.failure_queue.pop(0)[1]
+                    revision_reward = await self.generate_async(
+                        prompt=best_potential["next_prompt"],
+                        round=round + 1,
+                    )
+                    best_potential["reward"] = revision_reward
+                
+                for output in outputs:
+                    self.prompt_to_responses.setdefault(prompt, []).append(output)
+
+                return sum(output["reward"] for output in outputs) / n_samples_per_prompt
+
+
+        if args.sampling_tree == "v1":
+            sampling_tree = SamplingTreeV1()
+        elif args.sampling_tree == "v2":
+            sampling_tree = SamplingTreeV2()
+        else:
+            raise ValueError(f"Unknown sampling tree version: {args.sampling_tree}")
+        
         tasks = [sampling_tree.generate_async(prompt) for prompt in all_prompts]
         await asyncio.gather(*tasks)
         prompt_groups = sampling_tree.get_prompt_to_responses()
+        
+        
 
+        eos_token_id = self.tokenizer.eos_token_id
         # Reorder outputs to keep same prompts together
         # This is very important for REINFORCE++-baseline/GRPO/RLOO
         all_outputs = []
         for prompt in prompt_groups.keys():
             all_outputs.extend(prompt_groups[prompt])
-
-        eos_token_id = self.tokenizer.eos_token_id
 
         # Process outputs one by one
         experiences_list = []

@@ -217,6 +217,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # lean
     parser.add_argument("--max_rounds", type=int, default=1, help="max training rounds for tree sampling")
+    parser.add_argument("--sampling_tree", type=str, default="v1", help="sampling tree version")
     # Ray and vLLM
     parser.add_argument("--ref_num_nodes", type=int, default=1, help="number of nodes for reference")
     parser.add_argument("--ref_num_gpus_per_node", type=int, default=8, help="number of gpus per node for reference")

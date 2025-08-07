@@ -42,6 +42,7 @@ python3 -m openrlhf.cli.train_ppo_ray \
    --deepspeed_enable_sleep \
    --max_rounds 2 \
    --ring_attn_size 4 \
+   --sampling_tree v2 \
 
 # You could also try
 #   --kl_estimator k2 \
