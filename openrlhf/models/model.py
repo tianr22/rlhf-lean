@@ -267,23 +267,21 @@ def _get_critic_model(base_pretrained_model, base_llm_model, value_head_prefix="
                 input_ids, attention_mask=forward_attention_mask, position_ids=position_ids
             )
 
-            if action_mask is None:
-                assert return_output
-                return outputs
-
             last_hidden_states = outputs["last_hidden_state"]
             values = getattr(self, self.value_head_prefix)(last_hidden_states).squeeze(-1)  # (1, total_seqs)
 
             if self.packing_samples:
                 values = gather_and_pad_tensor(values, ring_attn_group, ring_attn_pad_len, indices, batch, seqlen)
 
-            values = values[:, :-1]
+            # values = values[:, :-1]
+            # for value prediction, we only care about the second last token since the last token is set to <eos>
+            values = values[:, -2]
+
             # normalize reward
             if self.normalize_reward:
                 values = (values - self.mean) / self.std
 
-            action_values = values[:, -action_mask.shape[1] :] * action_mask.float()
-
+            action_values = values
             if return_output:
                 return (action_values, outputs)
             else:

@@ -198,3 +198,4 @@ class RewardDataset(Dataset):
         reject_ids = zero_pad_sequences(reject_ids, side=padding_side, value=self.tokenizer.pad_token_id)
         rejects_masks = zero_pad_sequences(rejects_masks, side=padding_side)
         return chosen_ids, chosen_masks, reject_ids, rejects_masks, extras
+

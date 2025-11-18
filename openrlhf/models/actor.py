@@ -49,6 +49,8 @@ class Actor(nn.Module):
         packing_samples=False,
         temperature=1.0,
         use_liger_kernel=False,
+        need_append_tokens=False,
+        new_tokenizer_length=0,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -129,6 +131,10 @@ class Actor(nn.Module):
             self.packing_samples = packing_samples
         else:
             self.model = pretrain_or_model
+
+        if need_append_tokens:
+            assert new_tokenizer_length > 0
+            self.model.resize_token_embeddings(new_tokenizer_length)
 
     def forward(
         self,

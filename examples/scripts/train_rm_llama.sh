@@ -21,7 +21,6 @@ openrlhf.cli.train_rm \
    --flash_attn \
    --load_checkpoint \
    --packing_samples \
-   --gradient_checkpointing
 EOF
      # --use_wandb [WANDB_TOKENS] or True (use wandb login command)
      # --packing_samples

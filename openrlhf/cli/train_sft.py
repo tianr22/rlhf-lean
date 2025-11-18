@@ -17,6 +17,12 @@ def train(args):
     strategy = get_strategy(args)
     strategy.setup_distributed()
 
+    tokenizer = get_tokenizer(args.pretrain, model.model, "right", strategy, use_fast=not args.disable_fast_tokenizer)
+    if args.need_append_tokens:
+        new_tokens = ["<error>", "</error>", "<info>", "</info>"]
+        num_added_tokens = tokenizer.add_tokens(new_tokens)
+        print(f"Added {num_added_tokens} new tokens: {new_tokens}")
+
     # configure model
     # load huggingface model
     model = Actor(
@@ -31,9 +37,10 @@ def train(args):
         ds_config=strategy.get_ds_train_config(is_actor=True),
         packing_samples=args.packing_samples,
         use_liger_kernel=args.use_liger_kernel,
+        need_append_tokens=args.need_append_tokens,
+        new_tokenizer_length=len(tokenizer) if args.need_append_tokens else 0,
     )
     # configure tokenizer
-    tokenizer = get_tokenizer(args.pretrain, model.model, "right", strategy, use_fast=not args.disable_fast_tokenizer)
     strategy.print(model)
 
     # gradient_checkpointing
@@ -147,6 +154,9 @@ def train(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    # (TR) specific for lean
+    parser.add_argument("--need_append_tokens", action="store_true", default=False)
+
     # Checkpoint
     parser.add_argument("--save_path", type=str, default="./ckpt")
     parser.add_argument("--save_steps", type=int, default=-1)
