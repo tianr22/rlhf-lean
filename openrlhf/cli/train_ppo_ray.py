@@ -44,7 +44,7 @@ def train(args):
 
     # init vLLM engine for text generation
     if DEBUG:
-        print(Fore.RED + "start init vllm engine")
+        print(Fore.RED + "start init vllm engine" + Fore.BLACK)
     vllm_engines = None
     if args.vllm_num_engines is not None and args.vllm_num_engines > 0:
         max_len = args.max_len if args.max_len else args.prompt_max_len + args.generate_max_len
@@ -79,10 +79,10 @@ def train(args):
             args.agent_func_path,
         )
     if DEBUG:
-        print(Fore.RED + "end init vllm engine")
+        print(Fore.RED + "end init vllm engine" + Fore.BLACK)
 
     if DEBUG:
-        print(Fore.RED + "start init actor model")
+        print(Fore.RED + "start init actor model" + Fore.BLACK)
     actor_model = RayActorGroup(
         args.actor_num_nodes,
         args.actor_num_gpus_per_node,
@@ -92,6 +92,8 @@ def train(args):
         duplicate_actors=args.ring_attn_size * args.ds_tensor_parallel_size,
     )
 
+    if DEBUG:
+        print(Fore.RED + "start init ref model" + Fore.BLACK)
     if args.init_kl_coef <= 0:
         ref_model = None
     else:
@@ -151,7 +153,7 @@ def train(args):
 
     # init PPO trainer (Single controller)
     if DEBUG:
-        print(Fore.RED + "start init PPO trainer")
+        print(Fore.RED + "start init PPO trainer" + Fore.BLACK)
     ppo_trainer = PPOTrainer.remote(
         args.pretrain,
         strategy,
@@ -171,31 +173,31 @@ def train(args):
         top_p=args.top_p,
     )
     if DEBUG:
-        print(Fore.RED + "end init PPO trainer")
+        print(Fore.RED + "end init PPO trainer" + Fore.BLACK)
     # training update steps
     max_steps = ray.get(ppo_trainer.get_max_steps.remote())
 
     # init reference/reward/actor model
     if DEBUG:
-        print(Fore.RED + "start init reference/reward/actor trainer")
+        print(Fore.RED + "start init reference/reward/actor trainer" + Fore.BLACK)
     refs = []
     if ref_model is not None:
         refs.extend(ref_model.async_init_model_from_pretrained(strategy, args.pretrain))
     if DEBUG:
-        print(Fore.RED + "end init ref model")
+        print(Fore.RED + "end init ref model" + Fore.BLACK)
     refs.extend(actor_model.async_init_model_from_pretrained(strategy, args.pretrain, max_steps, vllm_engines))
     if DEBUG:
-        print(Fore.RED + "end init actor model")
+        print(Fore.RED + "end init actor model" + Fore.BLACK)
     if not args.remote_rm_url:
-        print(Fore.RED + "this should not be triggered")
+        print(Fore.RED + "this should not be triggered" + Fore.BLACK)
         refs.extend(reward_model.async_init_model_from_pretrained(strategy, reward_pretrain))
     if DEBUG:
-        print(Fore.RED + "end init reward model")
+        print(Fore.RED + "end init reward model" + Fore.BLACK)
     if DEBUG:
-        print(Fore.RED + f"total {len(refs)} refs")
+        print(Fore.RED + f"total {len(refs)} refs" + Fore.BLACK)
     ray.get(refs)
     if DEBUG:
-        print(Fore.RED + "end init reference/reward/actor trainer")
+        print(Fore.RED + "end init reference/reward/actor trainer" + Fore.BLACK)
 
     if args.critic_pretrain:
         # critic scheduler initialization depends on max_step, so we have to init critic after actor

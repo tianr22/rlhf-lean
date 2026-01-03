@@ -1,6 +1,7 @@
 import argparse
 import math
 import os
+import torch
 from datetime import datetime
 
 from transformers.trainer import get_scheduler
@@ -17,12 +18,7 @@ def train(args):
     strategy = get_strategy(args)
     strategy.setup_distributed()
 
-    tokenizer = get_tokenizer(args.pretrain, model.model, "right", strategy, use_fast=not args.disable_fast_tokenizer)
-    if args.need_append_tokens:
-        new_tokens = ["<error>", "</error>", "<info>", "</info>"]
-        num_added_tokens = tokenizer.add_tokens(new_tokens)
-        print(f"Added {num_added_tokens} new tokens: {new_tokens}")
-
+    
     # configure model
     # load huggingface model
     model = Actor(
@@ -37,10 +33,16 @@ def train(args):
         ds_config=strategy.get_ds_train_config(is_actor=True),
         packing_samples=args.packing_samples,
         use_liger_kernel=args.use_liger_kernel,
-        need_append_tokens=args.need_append_tokens,
-        new_tokenizer_length=len(tokenizer) if args.need_append_tokens else 0,
     )
     # configure tokenizer
+    tokenizer = get_tokenizer(args.pretrain, model.model, "right", strategy, use_fast=not args.disable_fast_tokenizer)
+    if args.need_append_tokens:
+        new_tokens = ["<error>", "</error>", "<info>", "</info>"]
+        num_added_tokens = tokenizer.add_tokens(new_tokens)
+        print(f"Added {num_added_tokens} new tokens: {new_tokens}")
+        # if torch.distributed.get_rank() == 0:
+        #     model.model.resize_token_embeddings(len(tokenizer))
+
     strategy.print(model)
 
     # gradient_checkpointing

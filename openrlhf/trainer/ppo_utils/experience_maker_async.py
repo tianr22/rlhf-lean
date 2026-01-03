@@ -1,9 +1,12 @@
 from typing import List
-from abc import ABC,abstractmethod
+from abc import ABC, abstractmethod
 import ray
 import torch
 import asyncio
 from openrlhf.trainer.ppo_utils.experience_maker import Experience, SamplesGenerator
+from colorama import Fore
+
+DEBUG = True
 
 
 class SamplesGeneratorAsync(SamplesGenerator):
@@ -45,7 +48,7 @@ class SamplesGeneratorAsync(SamplesGenerator):
 
             def get_prompt_to_responses(self):
                 return self.prompt_to_responses
-            
+
         class SamplingTreeV1(SamplingTree):
             async def generate_async(
                 self,
@@ -91,7 +94,7 @@ class SamplesGeneratorAsync(SamplesGenerator):
 
         class SamplingTreeV2(SamplingTree):
             def __init__(self):
-                super.__init__()
+                super().__init__()
                 self.failure_queue = []
 
             async def generate_async(
@@ -101,13 +104,13 @@ class SamplesGeneratorAsync(SamplesGenerator):
                 **kwargs,
             ):
                 """
-                    For this version, 
-                        prompt_to_responses: store all the passing outputs and the failing outputs that have been expanded
-                        failure_queue: store the failing outputs that have not been expanded yet
+                For this version,
+                    prompt_to_responses: store all the passing outputs and the failing outputs that have been expanded
+                    failure_queue: store the failing outputs that have not been expanded yet
                 """
                 if round >= self.max_rounds:
                     return 0
-                # TODO(tr) maybe moving the llm parallel to different original prompts is better 
+                # TODO(tr) maybe moving the llm parallel to different original prompts is better
                 refs = []
                 batch_size = (n_samples_per_prompt + len(llms) - 1) // len(llms)
                 for i, llm in enumerate(llms):
@@ -137,12 +140,11 @@ class SamplesGeneratorAsync(SamplesGenerator):
                         round=round + 1,
                     )
                     best_potential["reward"] = revision_reward
-                
+
                 for output in outputs:
                     self.prompt_to_responses.setdefault(prompt, []).append(output)
 
                 return sum(output["reward"] for output in outputs) / n_samples_per_prompt
-
 
         if args.sampling_tree == "v1":
             sampling_tree = SamplingTreeV1()
@@ -150,12 +152,10 @@ class SamplesGeneratorAsync(SamplesGenerator):
             sampling_tree = SamplingTreeV2()
         else:
             raise ValueError(f"Unknown sampling tree version: {args.sampling_tree}")
-        
+
         tasks = [sampling_tree.generate_async(prompt) for prompt in all_prompts]
         await asyncio.gather(*tasks)
         prompt_groups = sampling_tree.get_prompt_to_responses()
-        
-        
 
         eos_token_id = self.tokenizer.eos_token_id
         # Reorder outputs to keep same prompts together
@@ -190,6 +190,9 @@ class SamplesGeneratorAsync(SamplesGenerator):
                 tokenized_ranges.append((len(start_tokens), len(full_tokens)))
             if observation_tokens[-1] != eos_token_id:
                 tokenized_ranges[-1] = (tokenized_ranges[-1][0], tokenized_ranges[-1][1] + 1)
+
+            if DEBUG:
+                print(Fore.RED + f"tokenized ranges: {tokenized_ranges}" + Fore.BLACK)
 
             # Create tensors
             sequences = torch.tensor(tokenized_observation)

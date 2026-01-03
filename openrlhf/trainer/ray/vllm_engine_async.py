@@ -15,6 +15,7 @@ from tenacity import RetryError, retry, stop_after_attempt, wait_exponential, be
 from dataclasses import dataclass, field
 from .vllm_engine import BaseLLMRayActor
 from urllib.parse import urljoin, urlparse, urlunparse
+from kimina_client import AsyncKiminaClient
 
 from colorama import Fore
 
@@ -63,7 +64,7 @@ class LLMRayActorAsync(BaseLLMRayActor):
         self.llm = vllm.AsyncLLMEngine.from_engine_args(engine_args)
         await self.llm.is_sleeping()
 
-        self.lean_client = await Lean4Client.create(base_url="http://localhost:12332")
+        self.lean_client = AsyncKiminaClient(api_url="http://localhost:12332")
 
     async def init_process_group(
         self, master_address, master_port, rank_offset, world_size, group_name, backend, use_ray
@@ -95,19 +96,16 @@ class LLMRayActorAsync(BaseLLMRayActor):
         Returns (error, passed, messages)
         """
         # analyze compiler output
-        lean_results = await self.lean_client.async_verify(
-            [{"code": lean_code, "custom_id": f"{id(lean_code)}"}],
-            30,
-        )
-        lean_result = lean_results["results"][0]
-        if not lean_result["error"] is None:
+        lean_response = await self.lean_client.check(lean_code)
+        lean_result = lean_response.results[0]
+        if lean_result.error is not None:
             if DEBUG:
-                print(Fore.RED + f"compiler error {lean_result["error"]}")
+                print(Fore.RED + f"compiler error {lean_result["error"]}" + Fore.BLACK)
             return True, False, None
         passed = True
         if not allow_sorry and "sorry" in lean_code:
             passed = False
-        messages = lean_result["response"].get("messages", [])
+        messages = lean_result.response.get("messages", [])
         for message in messages:
             if message.get("severity") == "error":
                 passed = False
@@ -128,6 +126,8 @@ class LLMRayActorAsync(BaseLLMRayActor):
         )
         sampling_params.max_tokens = max_length - observation_tokens_len
         if sampling_params.max_tokens <= 0:
+            if DEBUG:
+                print(Fore.RED + "no available tokens" + Fore.BLACK)
             # No budget to generate, stop
             reward = 0
             score = 0
@@ -138,47 +138,50 @@ class LLMRayActorAsync(BaseLLMRayActor):
             # rollout llm
             request_output = await self.generate_async(observation, sampling_params)
             action = request_output.outputs[0].text
-            observation += action
             action_ranges.append((len(observation), len(observation) + len(action)))
+            observation += action
+            if DEBUG:
+                print(Fore.RED + f"action range: {len(observation)} - {len(observation) + len(action)}" + Fore.BLACK)
             # analyze generated lean code
-            _thought, lean_code = parse_response(action)
+            thought, lean_code = parse_response(action)
             if lean_code is None:
                 if DEBUG:
-                    print(Fore.RED + "lean code is none")
+                    print(Fore.RED + "lean code is none" + Fore.BLACK)
                 reward = 0.0
                 score = 0.0
                 passed = False
                 next_prompt = prompts[0]
-                heuristic = -math.inf
+                heuristic = -100
             else:
                 # compile the code and get the reward
                 error, passed, messages = await self.compile_lean(lean_code, allow_sorry=False)
                 if error:
                     # compiler error triggered
                     if DEBUG:
-                        print(Fore.RED + "error, reward = 0")
+                        print(lean_code)
+                        print(Fore.RED + "error, reward = 0" + Fore.BLACK)
                     reward = 0.0
                     score = 0.0
                     passed = False
                     next_prompt = prompts[0]
-                    heuristic = -math.inf
+                    heuristic = -100
                 elif passed:
                     # code is good
                     if DEBUG:
-                        print(Fore.RED + "passed, reward = 1")
+                        print(Fore.RED + "passed, reward = 1" + Fore.BLACK)
                     reward = 1.0
                     score = 1.0
                     next_prompt = ""
                     heuristic = 0
                 else:
                     # code is bad
-                    if DEBUG:
-                        print(Fore.RED + "failed, reward = 0")
                     reward = 0.0
                     score = 0.0
                     code_with_feedback = Trial(lean_code, messages).__str__()
                     next_prompt = replace_first_lean4_code(prompts[0], code_with_feedback)
                     heuristic = -len(messages)
+                    if DEBUG:
+                        print(Fore.RED + f"failed, reward = 0, heuristic = {heuristic}" + Fore.BLACK)
 
         final_response = {
             "prompt": prompts[0],
@@ -218,160 +221,6 @@ class LLMRayActorAsync(BaseLLMRayActor):
             except asyncio.QueueEmpty:
                 break
         return results
-
-
-class Lean4Client(object):
-    """Client for interacting with the Lean 4 verification server.
-
-    This client handles communication with a Lean 4 server for verifying proofs
-    and retrieving results. It handles authentication, connection testing,
-    and provides methods for synchronous and asynchronous verification.
-    """
-
-    def __init__(self, base_url, api_key=None, disable_cache=False) -> None:
-        """Initialize the Lean4Client.
-
-        Args:
-            base_url (str): Base URL of the Lean 4 server.
-            api_key (str, optional): API key for authentication. If None, will try
-                to load from LEANSERVER_API_KEY environment variable. Defaults to None.
-            disable_cache (bool, optional): Whether to disable result and header caching. Defaults to False.
-
-        Raises:
-            Exception: If the Lean server cannot be connected to or is unavailable.
-        """
-        self.url = base_url
-        if api_key is None:
-            api_key = os.getenv("LEANSERVER_API_KEY")
-
-        self.api_key = api_key
-        self.disable_cache = disable_cache
-
-    @classmethod
-    async def create(cls, base_url, api_key=None, disable_cache=False):
-        """异步工厂方法创建 Lean4Client 实例"""
-        client = cls(base_url, api_key, disable_cache)
-        await client._test_connection()
-        return client
-
-    async def async_verify(self, codes, timeout, infotree_type=None):
-        """verify the proof code and get result
-
-        Args:
-            codes (list): The list of lena 4 code to verify.
-                Each code is a dict of:
-                    - code: The lena 4 code to verify.
-                    - custom_id: The custom id of the proof.
-            timeout (int): The timeout in seconds.
-
-        Returns:
-            response (dict): The response from the server.
-                It contains a  key results, which is a list of dictionaries.
-                Each dictionary contains the following keys:
-                    - code: The custom id of the proof.
-                    - error: A string with the error message from the lean server.
-                    - response: A dictionary with the response from the LEAN REPL.
-
-        Example:
-            >>> client.one_pass_verify("import Mathlib\n\nexample : 2 = 2 := rfl", timeout=60)
-            {'results': [{'code': 'test_connection', 'error': None, 'response': {'env': 0}}]}
-        """
-        json_data = {
-            "codes": codes,
-            "timeout": timeout,
-            "infotree_type": infotree_type,
-            "disable_cache": self.disable_cache,
-        }
-        response = await self._query("post", "/verify", json_data)
-        return response
-
-    async def _query(
-        self,
-        method: str,
-        endpoint: str,
-        json_data: dict | None = None,
-        n_retries: int = 3,
-    ) -> dict:
-        """
-        One single method for sending all requests, with retry behavior controlled by the caller.
-
-        Args:
-            method: The HTTP method to use (e.g., "get", "post").
-            endpoint: The endpoint to call.
-            json_data: The data to send in the request.
-            n_retries: Number of retry attempts.
-
-        Returns:
-            response: The response from the server.
-        """
-
-        # Create retry decorator with dynamic n_retries
-        @retry(
-            stop=stop_after_attempt(n_retries),  # Dynamic retries based on the caller's argument
-            wait=wait_exponential(multiplier=1, min=1, max=10),  # Exponential backoff
-            before_sleep=before_sleep_log(logger, logging.ERROR),  # Optional logging of each retry
-        )
-        async def query_with_retries(url):
-            headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            }
-
-            # Create a session with trust_env set to True
-            if DEBUG:
-                print(Fore.RED + "lean client create session")
-            async with aiohttp.ClientSession(trust_env=True, timeout=aiohttp.ClientTimeout(total=3600)) as session:
-                async with session.request(
-                    method,
-                    self._ensure_url_has_scheme(str(urljoin(url, endpoint))),
-                    headers=headers,
-                    json=json_data,  # Directly send the JSON data
-                ) as response:
-                    # Get the response body asynchronously and parse it as JSON
-                    res = await response.json()
-
-            return res
-
-        # Call the query function with retries
-        return await query_with_retries(self.url)
-
-    def _ensure_url_has_scheme(self, url, default_scheme="http"):
-        """Ensure URL has a scheme (http/https) prefix.
-
-        Args:
-            url (str): The URL to check and potentially modify.
-            default_scheme (str, optional): The scheme to add if none exists. Defaults to "http".
-
-        Returns:
-            str: URL with a scheme.
-        """
-        parsed = urlparse(url)
-        if not parsed.scheme:
-            parsed = urlparse(f"{default_scheme}://{url}")
-        return urlunparse(parsed)
-
-    async def _test_connection(self):
-        """Test the connection to the Lean server.
-
-        Sends a simple GET request to the root endpoint to verify
-        that the server is available and responsive.
-
-        Raises:
-            Exception: If the server cannot be connected to or returns a non-ok status.
-
-        Returns:
-            bool: True if connection test passed.
-        """
-        try:
-            if DEBUG:
-                print(Fore.RED + "lean client test connection")
-            response = await self._query("get", "/")
-        except RetryError:
-            raise Exception(f"The lean server {self.url} cannot be connected.")
-
-        if response.get("status") != "ok":
-            raise Exception(f"The lean server {self.url} cannot be available. {response}")
 
 
 class CodeLine:
@@ -469,7 +318,7 @@ class Trial:
                 continue
             start_line = message["pos"]["line"] - 1
             start_column = message["pos"]["column"]
-            if message["endPos"] is None:
+            if message.get("endPos", None) is None:
                 # "error: expected token"
                 end_line = message["pos"]["line"] - 1
                 end_column = message["pos"]["column"]
@@ -548,7 +397,7 @@ def replace_first_lean4_code(original: str, new_code: str) -> str:
 
     if not match:
         if DEBUG:
-            print(Fore.RED + f"error forming next prompt {original}")
+            print(Fore.RED + f"error forming next prompt {original}" + Fore.BLACK)
         return original  # 未找到代码块时返回原字符串
 
     # 计算代码块的起止位置

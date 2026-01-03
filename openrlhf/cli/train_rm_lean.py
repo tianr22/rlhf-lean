@@ -21,7 +21,7 @@ def train(args):
     # load huggingface model/config
     model = get_llm_for_sequence_regression(
         args.pretrain,
-        "critic",
+        "reward",
         use_flash_attention_2=args.flash_attn,
         bf16=args.bf16,
         load_in_4bit=args.load_in_4bit,

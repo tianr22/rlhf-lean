@@ -214,7 +214,7 @@ class RewardModelTrainer(ABC):
         # eval
         if (
             global_step % args.eval_steps == 0 or global_step % self.num_update_steps_per_epoch == 0
-        ) and self.eval_dataloader is not None:
+        ) and False:
             # do eval when len(dataloader) > 0, avoid zero division in eval.
             if len(self.eval_dataloader) > 0:
                 self.evaluate(self.eval_dataloader, global_step)
@@ -345,3 +345,40 @@ class RewardModelTrainer(ABC):
         max_length = max(c_mask.shape[1], r_mask.shape[1])
         att_masks = torch.cat((pad_to_length(c_mask, max_length, 0), pad_to_length(r_mask, max_length, 0)), dim=0)
         return inputs_ids, att_masks
+
+class OnlineRewardModelTrainer(RewardModelTrainer):
+    def __init__(
+        self,
+        model,
+        strategy,
+        optim: Optimizer,
+        train_dataloader,
+        eval_dataloader,
+        scheduler,
+        tokenizer,
+        max_norm=0.5,
+        max_epochs: int = 2,
+        loss="sigmoid",
+        disable_ds_ckpt=False,
+        save_hf_ckpt=False,
+    ) -> None:
+        super().__init__(
+            model,
+            strategy,
+            optim,
+            train_dataloader,
+            eval_dataloader,
+            scheduler,
+            tokenizer,
+            max_norm,
+            max_epochs,
+            loss,
+            disable_ds_ckpt,
+            save_hf_ckpt,
+        )
+
+    def fit(self,args):
+        start_epoch = 0
+        epoch_bar = tqdm(range(start_epoch, self.epochs), desc="Train epoch", disable=not self.strategy.is_rank_0())
+        for epoch in range(start_epoch, self.epochs):
+            

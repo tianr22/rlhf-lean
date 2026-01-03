@@ -1,5 +1,14 @@
+#!/bin/bash
+# 设置日志文件路径
+LOG_FILE="training_$(date +%Y%m%d_%H%M%S).log"
+
+# 开始记录所有输出
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+# 启用详细调试输出
 set -x
 
+# 你的Python训练命令
 python3 -m openrlhf.cli.train_ppo_ray \
    --ref_num_nodes 1 \
    --ref_num_gpus_per_node 4 \
@@ -15,7 +24,7 @@ python3 -m openrlhf.cli.train_ppo_ray \
    --use_kl_loss \
    --kl_estimator k3 \
    --advantage_estimator group_norm \
-   --pretrain /home/fit/wanghn/WORK/liguchan/models/kimina-7b \
+   --pretrain /home/fit/wanghn/WORK/liguchan/checkpoints/sft_compiler_inside/global_step_404 \
    --agent_func_path /home/fit/wanghn/WORK/tianr/rlhf-lean/examples/python/agent_func.py \
    --save_path /home/fit/wanghn/WORK/liguchan/checkpoints/rlhf \
    --ckpt_path /home/fit/wanghn/WORK/liguchan/checkpoints/rlhf \
@@ -23,8 +32,6 @@ python3 -m openrlhf.cli.train_ppo_ray \
    --micro_train_batch_size 1 \
    --train_batch_size 32 \
    --micro_rollout_batch_size 2 \
-   --rollout_batch_size 1 \
-   --n_samples_per_prompt 8 \
    --max_epochs 1 \
    --prompt_max_len 4096 \
    --generate_max_len 12288 \
@@ -32,7 +39,7 @@ python3 -m openrlhf.cli.train_ppo_ray \
    --bf16 \
    --actor_learning_rate 5e-7 \
    --critic_learning_rate 9e-6 \
-   --prompt_data /home/fit/wanghn/WORK/tianr/prompts.jsonl \
+   --prompt_data /home/fit/wanghn/WORK/liguchan/prompts.jsonl \
    --input_key prompt \
    --normalize_reward \
    --packing_samples \
@@ -40,9 +47,9 @@ python3 -m openrlhf.cli.train_ppo_ray \
    --enforce_eager \
    --vllm_enable_sleep \
    --deepspeed_enable_sleep \
+   --rollout_batch_size 4 \
    --max_rounds 2 \
+   --n_samples_per_prompt 8 \
+   --save_steps 20 \
    --ring_attn_size 4 \
-   --sampling_tree v2 \
-
-# You could also try
-#   --kl_estimator k2 \
+   --sampling_tree v2

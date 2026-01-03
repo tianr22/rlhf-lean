@@ -15,8 +15,10 @@ from openrlhf.trainer.ray.launcher import RayActorGroup
 from openrlhf.utils.deepspeed import DeepspeedStrategy
 from openrlhf.utils.logging_utils import init_logger
 from openrlhf.utils.utils import get_tokenizer
+from colorama import Fore
 
 logger = init_logger(__name__)
+DEBUG = True
 
 
 class BasePPOTrainer(ABC):
@@ -433,6 +435,8 @@ class PPOTrainer(BasePPOTrainer):
     def fit(
         self,
     ) -> None:
+        if DEBUG:
+            print(Fore.RED + "PPO trainer: fit" + Fore.BLACK)
         args = self.args
 
         # broadcast init checkpoint to vllm
@@ -516,8 +520,8 @@ class PPOTrainer(BasePPOTrainer):
 
                 status = self.ppo_train(steps)
 
-                # if "kl" in status:
-                #     self.kl_ctl.update(status["kl"], args.rollout_batch_size * args.n_samples_per_prompt)
+                if "kl" in status:
+                    self.kl_ctl.update(status["kl"], args.rollout_batch_size * args.n_samples_per_prompt)
 
                 # Add generated samples to status dictionary
                 if self.args.dynamic_filtering:

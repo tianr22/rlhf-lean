@@ -10,8 +10,10 @@ def preprocess_data(
     apply_chat_template=None,
 ) -> str:
         prompt = ""
-        chosen = apply_chat_template(data[chosen_key], tokenize=False)
-        rejected = apply_chat_template(data[rejected_key], tokenize=False)
+        chosen = [{"role": "user", "content": data[chosen_key]}]
+        rejected = [{"role": "user", "content": data[rejected_key]}]
+        chosen = apply_chat_template(chosen, tokenize=False)
+        rejected = apply_chat_template(rejected, tokenize=False)
 
         # margin loss
         margin = 0

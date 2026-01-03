@@ -214,7 +214,7 @@ class ActorPPOTrainer(ABC):
 
         # actor loss
         if DEBUG:
-            print(Fore.RED + "ActorPPOTrainer compute log probs")
+            print(Fore.RED + "ActorPPOTrainer compute log probs" + Fore.BLACK)
         action_log_probs, output = self.actor(
             sequences,
             action_mask,
@@ -227,7 +227,7 @@ class ActorPPOTrainer(ABC):
 
         # loss function
         if DEBUG:
-            print(Fore.RED + "ActorPPOTrainer compute loss")
+            print(Fore.RED + "ActorPPOTrainer compute loss" + Fore.BLACK)
         actor_loss, clip_ratio = self.actor_loss_fn(
             action_log_probs,
             old_action_log_probs,
@@ -238,7 +238,7 @@ class ActorPPOTrainer(ABC):
 
         if self.args.use_kl_loss:
             if DEBUG:
-                print(Fore.RED + "ActorPPOTrainer compute kl loss")
+                print(Fore.RED + "ActorPPOTrainer compute kl loss" + Fore.BLACK)
             if self.args.init_kl_coef > 0:
                 kl = compute_approx_kl(
                     action_log_probs,
@@ -259,7 +259,7 @@ class ActorPPOTrainer(ABC):
         # entropy loss
         if self.args.entropy_loss_coef is not None:
             if DEBUG:
-                print(Fore.RED + "ActorPPOTrainer compute entropy loss")
+                print(Fore.RED + "ActorPPOTrainer compute entropy loss" + Fore.BLACK)
             entropy_loss = masked_mean(output.entropy[:, -experience.action_mask.shape[1] :], experience.action_mask)
             if self.args.entropy_loss_coef != 0:
                 loss -= entropy_loss * self.args.entropy_loss_coef
@@ -372,7 +372,7 @@ class ActorPPOTrainer(ABC):
 class PolicyModelActor(BaseModelActor):
     def init_model_from_pretrained(self, strategy: DeepspeedStrategy, pretrain, max_steps=None, vllm_engines=None):
         if DEBUG:
-            print(Fore.RED + "start init policy model actor")
+            print(Fore.RED + "start init policy model actor" + Fore.BLACK)
         args = strategy.args
         self.save_hf_ckpt = args.save_hf_ckpt
         self.disable_ds_ckpt = args.disable_ds_ckpt
@@ -388,7 +388,7 @@ class PolicyModelActor(BaseModelActor):
         self._setup_distributed(strategy)
 
         if DEBUG:
-            print(Fore.RED + "init policy model actor Actor")
+            print(Fore.RED + "init policy model actor Actor" + Fore.BLACK)
         actor = Actor(
             pretrain,
             use_flash_attention_2=strategy.args.flash_attn,
@@ -407,14 +407,14 @@ class PolicyModelActor(BaseModelActor):
 
         # configure tokenizer
         if DEBUG:
-            print(Fore.RED + "get tokenizer")
+            print(Fore.RED + "get tokenizer" + Fore.BLACK)
         self.tokenizer = get_tokenizer(
             pretrain, actor.model, "left", strategy, use_fast=not strategy.args.disable_fast_tokenizer
         )
 
         if args.enable_ema:
             if DEBUG:
-                print(Fore.RED + "init ema model")
+                print(Fore.RED + "init ema model" + Fore.BLACK)
             ema_model = Actor(
                 pretrain,
                 use_flash_attention_2=strategy.args.flash_attn,
@@ -428,7 +428,7 @@ class PolicyModelActor(BaseModelActor):
 
         # configure optimizer
         if DEBUG:
-            print(Fore.RED + "create optimizer")
+            print(Fore.RED + "create optimizer" + Fore.BLACK)
         actor_optim = strategy.create_optimizer(
             actor, lr=args.actor_learning_rate, betas=strategy.args.adam_betas, weight_decay=args.l2
         )
@@ -443,14 +443,14 @@ class PolicyModelActor(BaseModelActor):
 
         if args.gradient_checkpointing:
             if DEBUG:
-                print(Fore.RED + "enable gradient checkpointing")
+                print(Fore.RED + "enable gradient checkpointing" + Fore.BLACK)
             actor.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": args.gradient_checkpointing_use_reentrant}
             )
 
         # prepare models/optimizers...
         if DEBUG:
-            print(Fore.RED + "ppo model actor prepare models")
+            print(Fore.RED + "ppo model actor prepare models" + Fore.BLACK)
         self.actor, self.actor_optim, self.actor_scheduler = strategy.prepare(
             (actor, actor_optim, actor_scheduler),
             is_rlhf=True,
@@ -466,7 +466,7 @@ class PolicyModelActor(BaseModelActor):
         self.checkpoint_states = {}
         ckpt_path = os.path.join(args.ckpt_path, "_actor")
         if DEBUG:
-            print(Fore.RED + f"policy model actor load checkpoint: {ckpt_path}")
+            print(Fore.RED + f"policy model actor load checkpoint: {ckpt_path}" + Fore.BLACK)
         if args.load_checkpoint and os.path.exists(ckpt_path):
             strategy.print(f"Loading the checkpoint: {ckpt_path}")
             _, states = strategy.load_ckpt(self.actor.model, ckpt_path)
@@ -476,7 +476,7 @@ class PolicyModelActor(BaseModelActor):
 
         # initial offload
         if DEBUG:
-            print(Fore.RED + "policy model actor initial offload")
+            print(Fore.RED + "policy model actor initial offload" + Fore.BLACK)
         if strategy.args.deepspeed_enable_sleep:
             offload_deepspeed_states(self.actor.model)
 
@@ -495,7 +495,7 @@ class PolicyModelActor(BaseModelActor):
         )
 
         if DEBUG:
-            print(Fore.RED + "end init policy model actor")
+            print(Fore.RED + "end init policy model actor" + Fore.BLACK)
 
     def fit(self, kl_ctl: float = 0):
         """Train actor model with the replay buffer."""
@@ -529,7 +529,7 @@ class PolicyModelActor(BaseModelActor):
         self.actor.eval()
         with torch.no_grad():
             if DEBUG:
-                print(Fore.RED + "actor forward")
+                print(Fore.RED + "actor forward" + Fore.BLACK)
                 print("sequences length:", sequences.shape)
             action_log_probs = self.actor(
                 sequences.to(device),

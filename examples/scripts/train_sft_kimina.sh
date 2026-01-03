@@ -16,14 +16,16 @@ deepspeed --module openrlhf.cli.train_sft \
    --logging_steps 1 \
    --eval_steps -1 \
    --zero_stage 3 \
-   --ds_tensor_parallel_size 4 \
    --ring_attn_size 4 \
+   --overlap_comm \
+   --adam_offload \
+   --gradient_checkpointing \
    --max_epochs 1 \
    --packing_samples \
    --grad_accum_dtype float32 \
    --bf16 \
    --learning_rate 5e-6 \
-   --need_append_tokens \
+   --need_append_tokens 2>&1 | tee train_sft_kimina.log
 
 # Support HF tokenizer.apply_chat_template
 # --apply_chat_template 

@@ -211,7 +211,12 @@ def _get_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="
             reward = values.gather(dim=1, index=eos_indices).squeeze(1)
 
             if not self.training and self.normalize_reward:
+                assert False
+                # (TR) don't expect to normalize
                 reward = (reward - self.mean) / self.std
+
+            # transform to [0, 1] range
+            # reward = torch.sigmoid(reward)
 
             return (reward, outputs) if return_output else reward
 

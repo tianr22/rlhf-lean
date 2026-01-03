@@ -8,7 +8,7 @@ openrlhf.cli.train_rm \
    --logging_steps 1 \
    --eval_steps -1 \
    --train_batch_size 256 \
-   --micro_train_batch_size 2 \
+   --micro_train_batch_size 1 \
    --pretrain /data2/liguchan/Lean/prover/local/models/expert \
    --bf16 \
    --max_epochs 1 \
@@ -16,7 +16,6 @@ openrlhf.cli.train_rm \
    --zero_stage 3 \
    --learning_rate 9e-6 \
    --dataset /data2/tianrui/lean/value_data_train.jsonl \
-   --eval_dataset /data2/tianrui/lean/value_data_eval.jsonl \
    --prompt_key prompt \
    --value_key value \
    --flash_attn \

@@ -5,4 +5,5 @@ from .sft_dataset import SFTDataset
 from .unpaired_preference_dataset import UnpairedPreferenceDataset
 from .value_dataset import ValueDataset
 from .reward_lean_dataset import RewardDatasetLean
-__all__ = ["ProcessRewardDataset", "PromptDataset", "RewardDataset", "SFTDataset", "UnpairedPreferenceDataset", "ValueDataset", "RewardDatasetLean"]
+from .online_reward_dataset import OnlineRewardDatasetLean, PackageDataset
+__all__ = ["ProcessRewardDataset", "PromptDataset", "RewardDataset", "SFTDataset", "UnpairedPreferenceDataset", "ValueDataset", "RewardDatasetLean", "OnlineRewardDatasetLean", "PackageDataset"]
